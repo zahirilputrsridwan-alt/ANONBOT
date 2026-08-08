@@ -16,6 +16,20 @@ async def init_db():
             );
         """)
 
+        # add personal columns if not exist (safe with try/except)
+        try:
+            await db.execute("ALTER TABLE users ADD COLUMN personal_name TEXT DEFAULT '';")
+        except Exception:
+            pass
+        try:
+            await db.execute("ALTER TABLE users ADD COLUMN personal_start_text TEXT DEFAULT '';")
+        except Exception:
+            pass
+        try:
+            await db.execute("ALTER TABLE users ADD COLUMN personal_end_text TEXT DEFAULT '';")
+        except Exception:
+            pass
+
         await db.execute("""
             CREATE TABLE IF NOT EXISTS links (
               id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -50,6 +64,26 @@ async def init_db():
             );
         """)
 
+        # personal settings per user
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS personal_settings (
+              owner_id INTEGER PRIMARY KEY,
+              privacy INTEGER DEFAULT 0,
+              web_preview INTEGER DEFAULT 1,
+              formatting INTEGER DEFAULT 0,
+              photo INTEGER DEFAULT 1,
+              sticker INTEGER DEFAULT 1,
+              video INTEGER DEFAULT 1,
+              video_note INTEGER DEFAULT 1,
+              audio INTEGER DEFAULT 1,
+              voice INTEGER DEFAULT 1,
+              document INTEGER DEFAULT 1,
+              gif INTEGER DEFAULT 1,
+              contact INTEGER DEFAULT 1,
+              location INTEGER DEFAULT 1
+            );
+        """)
+
         await db.commit()
 
 async def add_user_if_not_exists(user_id, first_name, username, join_date):
@@ -59,6 +93,9 @@ async def add_user_if_not_exists(user_id, first_name, username, join_date):
         cur = await db.execute("SELECT unique_code FROM users WHERE user_id = ?", (user_id,))
         row = await cur.fetchone()
         if row:
+            # ensure personal settings exists
+            await db.execute("INSERT OR IGNORE INTO personal_settings (owner_id) VALUES (?)", (user_id,))
+            await db.commit()
             return row[0]
 
         # try to insert a unique code
@@ -69,6 +106,7 @@ async def add_user_if_not_exists(user_id, first_name, username, join_date):
                     "INSERT INTO users (user_id, first_name, username, join_date, unique_code) VALUES (?,?,?,?,?)",
                     (user_id, first_name, username, join_date, code),
                 )
+                await db.execute("INSERT OR IGNORE INTO personal_settings (owner_id) VALUES (?)", (user_id,))
                 await db.commit()
                 return code
             except sqlite3.IntegrityError:
@@ -81,10 +119,11 @@ async def add_user_if_not_exists(user_id, first_name, username, join_date):
             "INSERT OR IGNORE INTO users (user_id, first_name, username, join_date, unique_code) VALUES (?,?,?,?,?)",
             (user_id, first_name, username, join_date, code),
         )
+        await db.execute("INSERT OR IGNORE INTO personal_settings (owner_id) VALUES (?)", (user_id,))
         await db.commit()
         return code
 
-# Links related DB functions
+# --- Links related DB functions ---
 async def create_link(owner_id: int, name: str, created_at: str, slug: str = None):
     import secrets
     async with aiosqlite.connect(DATABASE_PATH) as db:
@@ -172,4 +211,44 @@ async def update_setting(link_id: int, field: str, value: int):
 
 async def count_messages_for_link(link_id: int):
     # Placeholder: no messages table yet, return 0
+    return 0
+
+# --- Personal link functions ---
+async def get_user(user_id: int):
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        cur = await db.execute("SELECT user_id, first_name, username, join_date, unique_code, personal_name, personal_start_text, personal_end_text FROM users WHERE user_id = ?", (user_id,))
+        row = await cur.fetchone()
+        return row
+
+async def update_user_personal_name(user_id: int, new_name: str):
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        await db.execute("UPDATE users SET personal_name = ? WHERE user_id = ?", (new_name, user_id))
+        await db.commit()
+
+async def update_user_personal_start_text(user_id: int, text: str):
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        await db.execute("UPDATE users SET personal_start_text = ? WHERE user_id = ?", (text, user_id))
+        await db.commit()
+
+async def update_user_personal_end_text(user_id: int, text: str):
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        await db.execute("UPDATE users SET personal_end_text = ? WHERE user_id = ?", (text, user_id))
+        await db.commit()
+
+async def get_personal_settings(owner_id: int):
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        cur = await db.execute("SELECT * FROM personal_settings WHERE owner_id = ?", (owner_id,))
+        row = await cur.fetchone()
+        return row
+
+async def update_personal_setting(owner_id: int, field: str, value: int):
+    allowed = {"privacy", "web_preview", "formatting", "photo", "sticker", "video", "video_note", "audio", "voice", "document", "gif", "contact", "location"}
+    if field not in allowed:
+        raise ValueError("Invalid setting")
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        await db.execute(f"UPDATE personal_settings SET {field} = ? WHERE owner_id = ?", (int(value), owner_id))
+        await db.commit()
+
+async def count_messages_for_user(user_id: int):
+    # Placeholder until messages table exists
     return 0
