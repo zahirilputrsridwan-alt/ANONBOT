@@ -1,11 +1,17 @@
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
-from database import create_link, get_links_by_owner, get_link_by_id, get_link_settings, toggle_link_status, update_setting, count_messages_for_link, update_link_name
+from database import (
+    create_link, get_links_by_owner, get_link_by_id, get_link_settings,
+    toggle_link_status, update_setting, count_messages_for_link, update_link_name,
+    get_user, get_personal_settings, update_personal_setting, count_messages_for_user
+)
 from datetime import datetime
 
-# entrypoint for link-related callbacks
+# --- Manage links handler (unchanged flows retained) ---
 async def handle_manage_links_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
+    if not query:
+        return
     data = query.data or ""
     chat_id = query.message.chat.id
     message_id = query.message.message_id
@@ -14,7 +20,6 @@ async def handle_manage_links_callback(update: Update, context: ContextTypes.DEF
     context.user_data['menu_message'] = (chat_id, message_id)
 
     if data == "manage_links":
-        # show management menu
         text = "🗂️ <b>Pengelolaan Tautan</b>\n\nDi menu ini Anda dapat membuat dan mengelola beberapa tautan anonim.\n\nSetiap tautan memiliki pengaturan masing-masing seperti:\n\n• Nama tautan\n• Teks pembuka\n• Teks penutup\n• Status aktif/nonaktif\n• Pengaturan media\n• Pengaturan fitur\n"
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("➕ Tambahkan Tautan Baru", callback_data="add_new_link")],
@@ -72,7 +77,7 @@ async def handle_manage_links_callback(update: Update, context: ContextTypes.DEF
         await query.edit_message_text(text=text, reply_markup=keyboard, parse_mode="HTML", disable_web_page_preview=True)
         return
 
-    # general menu
+    # general menu for created links
     if data.startswith("general:"):
         lid = int(data.split(":",1)[1])
         row = await get_link_by_id(lid)
@@ -99,7 +104,7 @@ async def handle_manage_links_callback(update: Update, context: ContextTypes.DEF
         await handle_manage_links_callback(update, context)
         return
 
-    # adjust slug / change name / change texts: for now, prompt and set awaiting flags
+    # change / adjust flows (left as in previous implementation)
     if data.startswith("change_name:") or data.startswith("adjust_slug:") or data.startswith("change_start_text:") or data.startswith("change_end_text:"):
         parts = data.split(":",1)
         action = parts[0]
@@ -118,9 +123,8 @@ async def handle_manage_links_callback(update: Update, context: ContextTypes.DEF
     # link delete/share/copy placeholders
     if data.startswith("link_delete:"):
         lid = int(data.split(":",1)[1])
-        # delete link
-        # For safety, implement soft delete by setting status=0 and clearing slug
-        await update_setting(lid, 'privacy', 1)  # reuse setting to mark
+        # mark privacy=1 as a simple marker
+        await update_setting(lid, 'privacy', 1)
         text = "✅ Tautan dicabut."
         keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Kembali", callback_data="manage_links")]])
         await query.edit_message_text(text=text, reply_markup=keyboard, parse_mode="HTML")
@@ -143,20 +147,17 @@ async def handle_manage_links_callback(update: Update, context: ContextTypes.DEF
 
     # settings toggles (media/features)
     if data.startswith("setting_"):
-        # format: setting_{field}:{link_id}
         try:
-            main, rest = data.split("_",1)
-            field, lid = rest.split(":")
+            _, rest = data.split("setting_",1)
+            field, lid = rest.split(":",1)
             lid = int(lid)
         except Exception:
             await query.answer("Invalid setting")
             return
-        # get current value
         settings = await get_link_settings(lid)
         if not settings:
             await query.answer("Settings not found")
             return
-        # settings is a tuple matching columns; find index of field
         cols = ["link_id","privacy","web_preview","formatting","photo","sticker","video","video_note","audio","voice","document","gif","contact","location"]
         if field not in cols:
             await query.answer("Unknown field")
@@ -165,25 +166,198 @@ async def handle_manage_links_callback(update: Update, context: ContextTypes.DEF
         cur_val = settings[idx]
         new_val = 0 if cur_val==1 else 1
         await update_setting(lid, field, new_val)
-        # refresh media or feature menu by calling same callback
-        # if field is media we should reopen media menu
         await handle_manage_links_callback(update, context)
         return
 
-    # list fallback
+    # fallback
     await query.edit_message_text(text="🚧 Menu ini masih dalam tahap pengembangan.", parse_mode="HTML")
 
 
-# handler for plain text inputs when awaiting actions
+# --- Personal link handler (updated to NOT reveal owner identity) ---
+async def handle_personal_link_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not query:
+        return
+    data = query.data or ""
+    chat_id = query.message.chat.id
+    message_id = query.message.message_id
+
+    # store current menu message so text inputs can edit it
+    context.user_data['menu_message'] = (chat_id, message_id)
+
+    user = query.from_user
+    owner_id = user.id
+
+    # Top-level "my link" page
+    if data == "my_link":
+        user_row = await get_user(owner_id)
+        if not user_row:
+            await query.edit_message_text(text="⚠️ Terjadi kesalahan: data pengguna tidak ditemukan.", parse_mode="HTML")
+            return
+        # user_row: user_id, first_name, username, join_date, unique_code, personal_name, personal_start_text, personal_end_text
+        # We MUST NOT display any owner identity (first_name/username/photo). Only show link and generic text.
+        _, _, _, join_date, unique_code, _, _, _ = user_row
+        bot_username = context.bot.username or "your_bot"
+        personal_link = f"https://t.me/{bot_username}?start={unique_code}"
+        text = (
+            "🔗 <b>Tautan Pribadi Gua</b>\n\n"
+            f"<code>{personal_link}</code>\n\n"
+            "⬇️ 1. Gercep Salin Link: Tinggal salin tautan di atas, terus langsung templokin ke bio IG, TikTok, atau sosmed kesayangan lu!\n\n"
+            "☕ 2. Pamer Lewat Tombol Bagikan: Mau ngajak mutualan atau temen tongkrongan nge-spill? Tinggal cocol tombol Bagikan di bawah.\n\n"
+            "🥷 3. Masuk Senyap Tanpa Jejak: Semua unek-unek atau rahasia pedes dari mereka bakal otomatis masuk diem-diem ke bot lu, aman pol!\n\n"
+            "✨ 4. Bebas Tebar Di Mana Aja: Mau dipajang di Insta Story, X (Twitter), atau grup manapun, dijamin tinggal cocol link-nya langsung gaskeun.\n"
+        )
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("⚙️ Pengaturan", callback_data="personal_settings")],
+            [InlineKeyboardButton("📤 Bagikan", callback_data="personal_share"), InlineKeyboardButton("📋 Salin Tautan", callback_data="personal_copy")],
+            [InlineKeyboardButton("⬅️ Kembali", callback_data="back_to_home")],
+        ])
+        await query.edit_message_text(text=text, reply_markup=keyboard, parse_mode="HTML", disable_web_page_preview=True)
+        return
+
+    # Personal settings main menu
+    if data == "personal_settings":
+        user_row = await get_user(owner_id)
+        if not user_row:
+            await query.edit_message_text(text="⚠️ Data pengguna tidak ditemukan.", parse_mode="HTML")
+            return
+        uid, _, _, join_date, unique_code, _, _, _ = user_row
+        count = await count_messages_for_user(uid)
+        bot_username = context.bot.username or "your_bot"
+        personal_link = f"https://t.me/{bot_username}?start={unique_code}"
+        text = (
+            "🔗 <b>Tautan Pribadi</b>\n\n"
+            f"📨 Jumlah pesan diterima: {count}\n"
+            f"📅 Tanggal dibuat: {join_date}\n\n"
+            f"🔗 Link tautan:\n<code>{personal_link}</code>\n"
+        )
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🖼️ Media", callback_data="personal_media"), InlineKeyboardButton("✨ Fitur", callback_data="personal_features")],
+            [InlineKeyboardButton("📤 Bagikan", callback_data="personal_share"), InlineKeyboardButton("📋 Salin Tautan", callback_data="personal_copy")],
+            [InlineKeyboardButton("⬅️ Kembali", callback_data="my_link")],
+        ])
+        await query.edit_message_text(text=text, reply_markup=keyboard, parse_mode="HTML", disable_web_page_preview=True)
+        return
+
+    # Personal share / copy
+    if data in ("personal_share", "personal_copy"):
+        user_row = await get_user(owner_id)
+        if not user_row:
+            await query.edit_message_text(text="⚠️ Data pengguna tidak ditemukan.", parse_mode="HTML")
+            return
+        uid, _, _, _, unique_code, _, _, _ = user_row
+        bot_username = context.bot.username or "your_bot"
+        link = f"https://t.me/{bot_username}?start={unique_code}"
+        text = f"🔗 Tautan pribadi Anda:\n<code>{link}</code>\n\nTautan tersebut dapat dibagikan ke Telegram, Instagram, TikTok, maupun media sosial lainnya."
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("⚙️ Pengaturan", callback_data="personal_settings")],
+            [InlineKeyboardButton("⬅️ Kembali", callback_data="my_link")],
+        ])
+        await query.edit_message_text(text=text, reply_markup=keyboard, parse_mode="HTML", disable_web_page_preview=True)
+        return
+
+    # Personal Media Menu
+    if data == "personal_media":
+        settings = await get_personal_settings(owner_id)
+        if not settings:
+            await query.edit_message_text(text="⚠️ Pengaturan personal tidak ditemukan.", parse_mode="HTML")
+            return
+        cols = ["owner_id","privacy","web_preview","formatting","photo","sticker","video","video_note","audio","voice","document","gif","contact","location"]
+        media_fields = ["photo","sticker","video","video_note","audio","voice","document","gif","contact","location"]
+        buttons = []
+        labels = {
+            "photo":"🖼 Foto",
+            "sticker":"😊 Stiker",
+            "video":"🎥 Video",
+            "video_note":"🎬 Video Note",
+            "audio":"🎵 Audio",
+            "voice":"🎤 Voice",
+            "document":"📄 Dokumen",
+            "gif":"🎞 GIF",
+            "contact":"👤 Kontak",
+            "location":"📍 Lokasi",
+        }
+        for field in media_fields:
+            idx = cols.index(field)
+            val = settings[idx]
+            buttons.append([InlineKeyboardButton(f"{labels[field]} {'✅' if val==1 else '❌'}", callback_data=f"personal_toggle:{field}:{owner_id}")])
+        buttons.append([InlineKeyboardButton("⬅️ Kembali", callback_data="personal_settings")])
+        await query.edit_message_text(text="🖼 <b>Pengaturan Media</b>\n\nAtur media apa saja yang boleh dikirim ke tautan pribadi Anda.", reply_markup=InlineKeyboardMarkup(buttons), parse_mode="HTML")
+        return
+
+    # Personal Features Menu
+    if data == "personal_features":
+        settings = await get_personal_settings(owner_id)
+        if not settings:
+            await query.edit_message_text(text="⚠️ Pengaturan personal tidak ditemukan.", parse_mode="HTML")
+            return
+        cols = ["owner_id","privacy","web_preview","formatting","photo","sticker","video","video_note","audio","voice","document","gif","contact","location"]
+        def status(field):
+            idx = cols.index(field)
+            return "✅" if settings[idx]==1 else "❌"
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton(f"🔒 Privasi {status('privacy')}", callback_data=f"personal_toggle:privacy:{owner_id}"), InlineKeyboardButton(f"🌐 Pratinjau Web {status('web_preview')}", callback_data=f"personal_toggle:web_preview:{owner_id}")],
+            [InlineKeyboardButton(f"📝 Pemformatan {status('formatting')}", callback_data=f"personal_toggle:formatting:{owner_id}"), InlineKeyboardButton("👥 Siapa yang dapat mengirim pesan", callback_data="personal_who_can_send")],
+            [InlineKeyboardButton("⬅️ Kembali", callback_data="personal_settings")],
+        ])
+        await query.edit_message_text(text="✨ <b>Pengaturan Fitur</b>\n\nAtur fitur tautan pribadi Anda.", reply_markup=keyboard, parse_mode="HTML")
+        return
+
+    # Toggle personal settings (media/features)
+    if data.startswith("personal_toggle:"):
+        try:
+            _, rest = data.split("personal_toggle:",1)
+            field, oid = rest.split(":",1)
+            owner = int(oid)
+        except Exception:
+            await query.answer("Invalid setting")
+            return
+        settings = await get_personal_settings(owner)
+        if not settings:
+            await query.answer("Settings not found")
+            return
+        cols = ["owner_id","privacy","web_preview","formatting","photo","sticker","video","video_note","audio","voice","document","gif","contact","location"]
+        if field not in cols:
+            await query.answer("Unknown field")
+            return
+        idx = cols.index(field)
+        cur_val = settings[idx]
+        new_val = 0 if cur_val==1 else 1
+        await update_personal_setting(owner, field, new_val)
+        # Refresh appropriate menu
+        if field in {"photo","sticker","video","video_note","audio","voice","document","gif","contact","location"}:
+            fake = update
+            fake.callback_query.data = "personal_media"
+            await handle_personal_link_callback(fake, context)
+            return
+        else:
+            fake = update
+            fake.callback_query.data = "personal_features"
+            await handle_personal_link_callback(fake, context)
+            return
+
+    # Personal 'who can send' placeholder
+    if data == "personal_who_can_send":
+        text = "👥 Fitur ini akan tersedia pada pembaruan berikutnya."
+        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Kembali", callback_data="personal_features")]])
+        await query.edit_message_text(text=text, reply_markup=keyboard, parse_mode="HTML")
+        return
+
+    # Fallback
+    await query.edit_message_text(text="🚧 Menu ini masih dalam tahap pengembangan.", parse_mode="HTML")
+
+
+# handler for plain text inputs when awaiting actions (keeps create link flow only)
 async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # This function is registered in main.py as a MessageHandler
     user = update.effective_user
     if not user:
         return
     uid = user.id
+    text_content = update.message.text.strip()
+
+    # create new link flow
     if context.user_data.get('awaiting_link_name'):
-        name = update.message.text.strip()
-        # create link
+        name = text_content
         created_at = datetime.utcnow().isoformat()
         link_id, code = await create_link(uid, name, created_at)
         bot_username = context.bot.username or 'your_bot'
@@ -205,26 +379,62 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.pop('awaiting_link_name', None)
         return
 
-    # awaiting other actions (change_name, adjust_slug, etc.)
+    # other awaiting actions are part of link management; preserve previous minimal handling
     action = context.user_data.get('awaiting_action')
     if action:
-        act, lid = action
-        text_value = update.message.text.strip()
+        act, target = action
+        value = text_content
         if act == 'change_name':
-            await update_link_name(lid, text_value)
-            # show confirmation and go back to general menu
-            await context.bot.send_message(chat_id=update.effective_chat.id, text="✅ Nama tautan berhasil diubah.")
-        # TODO: handle other actions (slug, texts) — for now minimal implementation
+            await update_link_name(target, value)
+            confirmation = "✅ Nama tautan berhasil diubah."
+            menu = context.user_data.get('menu_message')
+            if menu:
+                chat_id, message_id = menu
+                kb = InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Kembali", callback_data=f"link_settings:{target}")]])
+                await context.bot.edit_message_text(text=confirmation, chat_id=chat_id, message_id=message_id, reply_markup=kb, parse_mode='HTML')
+        elif act == 'adjust_slug':
+            slug = ''.join(ch for ch in value if ch.isalnum() or ch in "-_")
+            try:
+                import aiosqlite
+                from config import DATABASE_PATH
+                async with aiosqlite.connect(DATABASE_PATH) as db:
+                    await db.execute("UPDATE links SET slug = ? WHERE id = ?", (slug, target))
+                    await db.commit()
+                confirmation = "✅ Alamat tautan berhasil diperbarui."
+            except Exception:
+                confirmation = "⚠️ Gagal memperbarui alamat. Coba slug lain."
+            menu = context.user_data.get('menu_message')
+            if menu:
+                chat_id, message_id = menu
+                kb = InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Kembali", callback_data=f"general:{target}")]])
+                await context.bot.edit_message_text(text=confirmation, chat_id=chat_id, message_id=message_id, reply_markup=kb, parse_mode='HTML')
+        elif act == 'change_start_text':
+            import aiosqlite
+            from config import DATABASE_PATH
+            async with aiosqlite.connect(DATABASE_PATH) as db:
+                await db.execute("UPDATE links SET start_text = ? WHERE id = ?", (value, target))
+                await db.commit()
+            confirmation = "✅ Teks pembuka berhasil diperbarui."
+            menu = context.user_data.get('menu_message')
+            if menu:
+                chat_id, message_id = menu
+                kb = InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Kembali", callback_data=f"general:{target}")]])
+                await context.bot.edit_message_text(text=confirmation, chat_id=chat_id, message_id=message_id, reply_markup=kb, parse_mode='HTML')
+        elif act == 'change_end_text':
+            import aiosqlite
+            from config import DATABASE_PATH
+            async with aiosqlite.connect(DATABASE_PATH) as db:
+                await db.execute("UPDATE links SET end_text = ? WHERE id = ?", (value, target))
+                await db.commit()
+            confirmation = "✅ Teks penutup berhasil diperbarui."
+            menu = context.user_data.get('menu_message')
+            if menu:
+                chat_id, message_id = menu
+                kb = InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Kembali", callback_data=f"general:{target}")]])
+                await context.bot.edit_message_text(text=confirmation, chat_id=chat_id, message_id=message_id, reply_markup=kb, parse_mode='HTML')
+        # clear awaiting flag
         context.user_data.pop('awaiting_action', None)
-        # edit menu message back to general
-        menu = context.user_data.get('menu_message')
-        if menu:
-            chat_id, message_id = menu
-            # trigger general menu refresh by editing the callback via synthetic callback handling
-            # here simply call handle_manage_links_callback by creating a fake update? Simpler: edit message to say done and show back button
-            keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Kembali", callback_data=f"manage_links")]])
-            await context.bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="✅ Perubahan disimpan.", reply_markup=keyboard, parse_mode='HTML')
         return
 
-    # if nothing awaited, ignore or inform
+    # otherwise ignore
     return
