@@ -12,23 +12,12 @@ async def init_db():
               first_name TEXT,
               username TEXT,
               join_date TEXT,
-              unique_code TEXT UNIQUE
+              unique_code TEXT UNIQUE,
+              personal_name TEXT DEFAULT '',
+              personal_start_text TEXT DEFAULT '',
+              personal_end_text TEXT DEFAULT ''
             );
         """)
-
-        # add personal columns if not exist (safe with try/except)
-        try:
-            await db.execute("ALTER TABLE users ADD COLUMN personal_name TEXT DEFAULT '';")
-        except Exception:
-            pass
-        try:
-            await db.execute("ALTER TABLE users ADD COLUMN personal_start_text TEXT DEFAULT '';")
-        except Exception:
-            pass
-        try:
-            await db.execute("ALTER TABLE users ADD COLUMN personal_end_text TEXT DEFAULT '';")
-        except Exception:
-            pass
 
         await db.execute("""
             CREATE TABLE IF NOT EXISTS links (
@@ -81,6 +70,19 @@ async def init_db():
               gif INTEGER DEFAULT 1,
               contact INTEGER DEFAULT 1,
               location INTEGER DEFAULT 1
+            );
+        """)
+
+        # messages table for anonymous messages
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS messages (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              owner_id INTEGER,
+              link_code TEXT,
+              message_type TEXT,
+              content TEXT,
+              file_id TEXT,
+              created_at TEXT
             );
         """)
 
@@ -210,13 +212,22 @@ async def update_setting(link_id: int, field: str, value: int):
         await db.commit()
 
 async def count_messages_for_link(link_id: int):
-    # Placeholder: no messages table yet, return 0
-    return 0
+    # Placeholder: no messages table yet
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        cur = await db.execute("SELECT COUNT(1) FROM messages WHERE link_code = (SELECT unique_code FROM links WHERE id = ?)", (link_id,))
+        row = await cur.fetchone()
+        return row[0] if row else 0
 
 # --- Personal link functions ---
 async def get_user(user_id: int):
     async with aiosqlite.connect(DATABASE_PATH) as db:
         cur = await db.execute("SELECT user_id, first_name, username, join_date, unique_code, personal_name, personal_start_text, personal_end_text FROM users WHERE user_id = ?", (user_id,))
+        row = await cur.fetchone()
+        return row
+
+async def get_user_by_code(unique_code: str):
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        cur = await db.execute("SELECT user_id, first_name, username, join_date, unique_code, personal_name, personal_start_text, personal_end_text FROM users WHERE unique_code = ?", (unique_code,))
         row = await cur.fetchone()
         return row
 
@@ -250,5 +261,27 @@ async def update_personal_setting(owner_id: int, field: str, value: int):
         await db.commit()
 
 async def count_messages_for_user(user_id: int):
-    # Placeholder until messages table exists
-    return 0
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        cur = await db.execute("SELECT COUNT(1) FROM messages WHERE owner_id = ?", (user_id,))
+        row = await cur.fetchone()
+        return row[0] if row else 0
+
+async def get_owner_by_code(unique_code: str):
+    """Return owner_id if unique_code belongs to user or link, else None."""
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        cur = await db.execute("SELECT user_id FROM users WHERE unique_code = ?", (unique_code,))
+        row = await cur.fetchone()
+        if row:
+            return row[0]
+        cur = await db.execute("SELECT owner_id FROM links WHERE unique_code = ?", (unique_code,))
+        row = await cur.fetchone()
+        return row[0] if row else None
+
+async def add_message(owner_id: int, link_code: str, message_type: str, content: str = None, file_id: str = None, created_at: str = None):
+    created_at = created_at or datetime.utcnow().isoformat()
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        await db.execute(
+            "INSERT INTO messages (owner_id, link_code, message_type, content, file_id, created_at) VALUES (?,?,?,?,?,?)",
+            (owner_id, link_code, message_type, content, file_id, created_at)
+        )
+        await db.commit()
