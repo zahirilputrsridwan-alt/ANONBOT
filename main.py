@@ -36,6 +36,13 @@ except Exception:
         if update.message and update.message.text:
             await update.message.reply_text(f"Anda memilih: {update.message.text}")
 
+# Import start handler
+try:
+    from handlers.start import start_handler
+except Exception:
+    async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        await update.message.reply_text("Halo. /start handler belum tersedia.")
+
 # Generic callback handler that routes admin:* callbacks to admin handler
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -114,6 +121,7 @@ async def main():
     app = ApplicationBuilder().token(token).build()
 
     # Command handlers
+    app.add_handler(CommandHandler("start", start_handler))
     app.add_handler(CommandHandler("admin_user", admin_user_command))
 
     # Message handler for reply keyboard main menu (and general text)
